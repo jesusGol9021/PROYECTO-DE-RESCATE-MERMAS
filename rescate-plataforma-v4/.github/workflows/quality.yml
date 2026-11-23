@@ -1,0 +1,55 @@
+name: quality-gate
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: rescate_mermas
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d rescate_mermas"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/rescate_mermas
+      BETTER_AUTH_SECRET: ci-only-secret-not-for-production-0123456789abcdef
+      BETTER_AUTH_URL: http://localhost:3000
+      CRON_SECRET: ci-only-cron-secret-not-for-production-0123456789
+      NODE_ENV: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install PostgreSQL client
+        run: sudo apt-get update && sudo apt-get install -y postgresql-client
+      - name: Install dependencies
+        run: npm ci
+      - name: Apply migrations to a clean test database
+        run: |
+          set -e
+          for file in db/000_schema.sql db/002_roles_geolocation_qr.sql db/003_fase2_3.sql db/004_donations_columns.sql db/005_privacy_consent_and_validation_lockout.sql db/006_profiles_and_food_windows.sql db/007_persistent_auth_rate_limit.sql db/008_declared_weight_kg.sql; do
+            psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "$file"
+          done
+      - name: Verify migrated database schema
+        run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f tests/database-smoke.sql
+      - name: Static regression tests
+        run: npm test
+      - name: TypeScript check
+        run: npm run typecheck
+      - name: Production build
+        run: npm run build
+      - name: Dependency audit
+        run: npm audit --audit-level=high
